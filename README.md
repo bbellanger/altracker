@@ -66,11 +66,3 @@ and the analysis gets more meaningful every week as the dataset grows.
   Apex results (avg kills, avg damage, avg placement, win rate). This is
   the actual answer to "does this training work" — everything else is a
   proxy for it.
-
-## Current state (seeded from your first upload)
-
-I've already run `ingest` once on your initial 12 CSVs and generated a first
-`report.html` so you can see the shape of the output — but with only 2-4
-sessions per task, most of the correlation/leverage sections will read
-"not enough data yet." That's expected. The real value comes in after
-3-4 weeks of consistent logging.

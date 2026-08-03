@@ -3,6 +3,24 @@
 A weekly-refeed pipeline: keep exporting from Aim Lab, keep running `ingest`,
 and the analysis gets more meaningful every week as the dataset grows.
 
+<p align="center">
+  <a href="https://www.youtube.com/watch?v=oljysAP4u1c">
+    <img src="https://youtube.com" alt="Watch the video" width="600">
+  </a>
+</p>
+
+## Install
+
+You will need python installed on your computer to use `altracker`. To install cleanly, set up a python virtual environment:
+```bash
+python3 -m venv venv
+```
+
+The install all necessary packages using the `requirements.txt`
+```bash
+venv/bin/python -m pip install -r requirements.txt
+```
+
 ## Folder contents
 
 - `aimlab_pipeline.py` — the script, run from the command line (needs `pandas`,

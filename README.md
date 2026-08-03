@@ -3,11 +3,7 @@
 A weekly-refeed pipeline: keep exporting from Aim Lab, keep running `ingest`,
 and the analysis gets more meaningful every week as the dataset grows.
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=oljysAP4u1c">
-    ![youtube.png]
-  </a>
-</p>
+    ![youtube.png](https://www.youtube.com/watch?v=oljysAP4u1c)
 
 ## Install
 

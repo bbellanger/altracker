@@ -5,7 +5,7 @@ and the analysis gets more meaningful every week as the dataset grows.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=oljysAP4u1c">
-    <img src="https://youtube.com" alt="Watch the video" width="600">
+    ![youtube.png]
   </a>
 </p>
 

@@ -46,6 +46,45 @@ def task_variant_from_filename(path):
     return Path(path).stem
 
 
+def read_aimlab_csv(path):
+    """
+    Read an Aim Lab export tolerantly. Two known quirks of these files:
+      1. Every data row ends with a trailing comma (one extra empty field
+         vs. the header).
+      2. Aim Lab sometimes changes a task's export schema over time, so a
+         single file can have a short header from when it was first created
+         but later rows with more fields (new columns Aim Lab added since).
+    Rather than let pandas' strict tokenizer error out on ragged rows, we
+    parse by hand: keep the first len(header) fields of every row (extra
+    trailing fields — whether blank padding or newer unrecognized columns —
+    are dropped), and pad short rows with blanks.
+    """
+    import csv
+
+    with open(path, newline="", encoding="utf-8-sig") as fh:
+        rows = list(csv.reader(fh))
+    if not rows:
+        return pd.DataFrame()
+
+    header = rows[0]
+    ncols = len(header)
+    data_rows = []
+    for r in rows[1:]:
+        if not r or all(c == "" for c in r):
+            continue
+        if len(r) < ncols:
+            r = r + [""] * (ncols - len(r))
+        elif len(r) > ncols:
+            r = r[:ncols]
+        data_rows.append(r)
+
+    df = pd.DataFrame(data_rows, columns=header)
+    for c in df.columns:
+        if c not in META_COLS:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+
 def ingest(folder):
     folder = Path(folder)
     csv_files = sorted(folder.glob("*.csv"))
@@ -68,10 +107,7 @@ def ingest(folder):
     for f in csv_files:
         variant = task_variant_from_filename(f)
         try:
-            # Aim Lab exports end each data row with a trailing comma (one more
-            # field than the header). index_col=False stops pandas from
-            # mistaking the first column for an index and shifting everything.
-            df = pd.read_csv(f, index_col=False)
+            df = read_aimlab_csv(f)
         except Exception as e:
             print(f"  ! skipped {f.name}: {e}")
             continue
@@ -173,12 +209,7 @@ def report():
     trend_df = pd.DataFrame(trend_rows).sort_values("slope_per_session", ascending=False)
 
     # --- cross-task correlation (needs overlapping sessions / enough rows) ---
-    # Only compute/show correlations for drills that actually have enough
-    # sessions (3+) — otherwise every cell involving that drill is NaN and
-    # the table is unreadable clutter rather than useful information.
-    eligible_cols = [c for c in wide.columns if wide[c].count() >= 3]
-    excluded_cols = [c for c in wide.columns if c not in eligible_cols]
-    corr = wide[eligible_cols].corr(min_periods=3) if eligible_cols else pd.DataFrame()
+    corr = wide.corr(min_periods=3)  # NaN-heavy until you have enough weeks of data
 
     # --- leverage ranking: tasks whose score correlates most with the average of all others ---
     leverage_rows = []
@@ -199,46 +230,69 @@ def report():
             leverage_rows.append({"task_variant": v, "corr_with_other_tasks_avg": round(r, 2) if not pd.isna(r) else np.nan})
     leverage_df = pd.DataFrame(leverage_rows)
 
-    # --- Apex correlation, if logged (one row per match: date, kills, damage, placement) ---
+    # --- Apex correlation, if logged (one row per match; any numeric columns work) ---
     apex_summary_html = ""
     apex_corr_html = ""
     apex = None
     if APEX_PATH.exists():
-        apex = pd.read_csv(APEX_PATH, parse_dates=["date"])
+        apex = pd.read_csv(APEX_PATH)
+        try:
+            # format="mixed" lets each row be parsed independently, so it's fine
+            # if you log some dates as 08/09/2026 and others as 2026-08-09.
+            apex["date"] = pd.to_datetime(apex["date"], errors="coerce", format="mixed")
+        except TypeError:
+            # older pandas without format="mixed" support
+            apex["date"] = pd.to_datetime(apex["date"], errors="coerce")
+        n_unparsed = apex["date"].isna().sum()
         apex = apex.dropna(subset=["date"])
+        if n_unparsed:
+            print(f"  ! {n_unparsed} row(s) in apex_sessions.csv had an unparseable date and were skipped.")
+
+    # Friendlier labels for known columns; anything else falls back to the column name.
+    STAT_LABELS = {
+        "kills": "Avg kills",
+        "damage": "Avg damage",
+        "placement": "Avg placement",
+        "knockdowns": "Avg knockdowns",
+        "assists": "Avg assists",
+    }
 
     if apex is None or apex.empty:
         apex_summary_html = (
             "<p class='muted'>No Apex match log yet. Add one row per game to "
-            "<code>apex_sessions.csv</code> (date, kills, damage, placement, notes) "
-            "and re-run this report to see how your Aim Lab scores relate to actual in-game results.</p>"
+            "<code>apex_sessions.csv</code> (date, plus whatever match stats you're tracking, e.g. "
+            "kills, damage, placement, knockdowns, assists, notes) and re-run this report to see "
+            "how your Aim Lab scores relate to actual in-game results.</p>"
         )
     else:
-        n_games = len(apex)
-        win_rate = (apex["placement"] == 1).mean() * 100 if "placement" in apex else np.nan
-        avg_placement = apex["placement"].mean() if "placement" in apex else np.nan
-        avg_kills = apex["kills"].mean() if "kills" in apex else np.nan
-        avg_damage = apex["damage"].mean() if "damage" in apex else np.nan
-        apex_summary_html = f"""
-        <div class="stat-row">
-          <div class="stat"><div class="stat-value">{n_games}</div><div class="stat-label">Games logged</div></div>
-          <div class="stat"><div class="stat-value">{avg_placement:.1f}</div><div class="stat-label">Avg placement</div></div>
-          <div class="stat"><div class="stat-value">{win_rate:.0f}%</div><div class="stat-label">Win rate</div></div>
-          <div class="stat"><div class="stat-value">{avg_kills:.1f}</div><div class="stat-label">Avg kills</div></div>
-          <div class="stat"><div class="stat-value">{avg_damage:.0f}</div><div class="stat-label">Avg damage</div></div>
-        </div>
-        """
+        # Any column that isn't date/notes and is numeric gets tracked automatically.
+        apex_numeric_cols = [
+            c for c in apex.columns
+            if c not in ("date", "notes") and pd.api.types.is_numeric_dtype(apex[c])
+        ]
 
-        # weekly aggregates from per-game apex log
+        n_games = len(apex)
+        stat_cards = [f'<div class="stat"><div class="stat-value">{n_games}</div><div class="stat-label">Games logged</div></div>']
+        if "placement" in apex_numeric_cols:
+            avg_placement = apex["placement"].mean()
+            win_rate = (apex["placement"] == 1).mean() * 100
+            stat_cards.append(f'<div class="stat"><div class="stat-value">{avg_placement:.1f}</div><div class="stat-label">Avg placement</div></div>')
+            stat_cards.append(f'<div class="stat"><div class="stat-value">{win_rate:.0f}%</div><div class="stat-label">Win rate</div></div>')
+        for c in apex_numeric_cols:
+            if c == "placement":
+                continue  # already shown above
+            label = STAT_LABELS.get(c, f"Avg {c}")
+            stat_cards.append(f'<div class="stat"><div class="stat-value">{apex[c].mean():.1f}</div><div class="stat-label">{label}</div></div>')
+        apex_summary_html = f'<div class="stat-row">{"".join(stat_cards)}</div>'
+
+        # weekly aggregates from per-game apex log — built dynamically from whatever columns exist
         apex_wk = apex.copy()
         apex_wk["week"] = apex_wk["date"].dt.to_period("W").dt.start_time
-        weekly_apex = apex_wk.groupby("week").agg(
-            avg_kills=("kills", "mean") if "kills" in apex_wk else ("date", "count"),
-            avg_damage=("damage", "mean") if "damage" in apex_wk else ("date", "count"),
-            avg_placement=("placement", "mean") if "placement" in apex_wk else ("date", "count"),
-            win_rate=("placement", lambda s: (s == 1).mean() * 100) if "placement" in apex_wk else ("date", "count"),
-            games_played=("date", "count"),
-        )
+        agg_spec = {f"avg_{c}": (c, "mean") for c in apex_numeric_cols}
+        if "placement" in apex_numeric_cols:
+            agg_spec["win_rate"] = ("placement", lambda s: (s == 1).mean() * 100)
+        agg_spec["games_played"] = ("date", "count")
+        weekly_apex = apex_wk.groupby("week").agg(**agg_spec)
 
         wk = wide.copy()
         wk["week"] = wk.index.to_period("W").start_time
@@ -320,17 +374,13 @@ def report():
     def table_html(df, extra_class=""):
         if df is None or df.empty:
             return "<p class='muted'>Not enough data yet.</p>"
-        return df.to_html(index=False, classes=f"tbl {extra_class}", border=0, na_rep="–")
+        return df.to_html(index=False, classes=f"tbl {extra_class}", border=0)
 
     if not corr.empty:
         corr_display = corr.round(2).reset_index().rename(columns={"index": "task_variant"})
         corr_table_html = table_html(corr_display)
     else:
         corr_table_html = table_html(None)
-
-    corr_note = "Score correlation between every pair of drills. Values near 1 move together; near 0 are independent skills."
-    if excluded_cols:
-        corr_note += f" Not shown yet (need 3+ sessions each): {', '.join(excluded_cols)}."
 
     # --- assemble HTML ---
     html = f"""<!DOCTYPE html>
@@ -502,7 +552,7 @@ def report():
 
   <section>
     <h2>Cross-drill correlation matrix</h2>
-    <p class="muted">{corr_note}</p>
+    <p class="muted">Score correlation between every pair of drills. Values near 1 move together; near 0 are independent skills.</p>
     <div class="panel">{corr_table_html}</div>
   </section>
 
